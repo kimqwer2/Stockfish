@@ -940,7 +940,9 @@ namespace {
     // Step 7. Futility pruning: child node (~50 Elo)
     if (   !PvNode
         &&  depth < 9 - 3 * pos.blast_on_capture()
-        && (improving || opponentWorsening || (ss-1)->inCheck)
+        && (   improving
+            || (depth < 12 && opponentWorsening)
+            || (depth < 10 && (ss-1)->inCheck))
         &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
         return eval;
@@ -951,6 +953,7 @@ namespace {
         && (ss-1)->currentMove != MOVE_NULL
         && (ss-1)->statScore < 23767
         &&  eval >= beta
+        && (depth < 12 || eval >= beta + 20 * (depth - 11))
         &&  eval >= ss->staticEval
         &&  ss->staticEval >= beta - 20 * depth - 22 * improving + 168 * ss->ttPv + 159 + 200 * (!pos.double_step_region(pos.side_to_move()) && (pos.piece_types() & PAWN))
         && !excludedMove
@@ -1223,7 +1226,7 @@ moves_loop: // When in check, search starts from here
           &&  abs(ttValue) < VALUE_KNOWN_WIN
           && (tte->bound() & BOUND_LOWER)
           &&  tte->depth() >= depth - 3
-          && !is_shuffling(move, ss, pos))
+          && !(depth < 12 && is_shuffling(move, ss, pos)))
       {
           Value singularBeta = ttValue - 2 * depth;
           Depth singularDepth = (depth - 1) / 2;
@@ -1353,12 +1356,22 @@ moves_loop: // When in check, search starts from here
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+
+              // Prevent history from dominating deep-node reductions
+              ss->statScore = std::clamp(ss->statScore, -28000, 28000);
           }
+
+          // Soften late-move reductions at higher depths for LTC stability
+          if (depth > 15)
+              r -= 1 + !captureOrPromotion;
 
           // In general we want to cap the LMR depth search at newDepth. But if
           // reductions are really negative and movecount is low, we allow this move
           // to be searched deeper than the first move, unless ttMove was extended by 2.
           Depth d = std::clamp(newDepth - r, 1, newDepth + (r < -1 && moveCount <= 5 && !doubleExtension));
+
+          if (depth > 15)
+              d = std::max(d, newDepth - 1);
 
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
