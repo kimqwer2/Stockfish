@@ -44,6 +44,7 @@ struct TTEntry {
   bool is_pv()  const { return (bool)(genBound8 & 0x4); }
   Bound bound() const { return (Bound)(genBound8 & 0x3); }
   void save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev);
+  uint8_t relative_age() const;
 
 private:
   friend class TranspositionTable;

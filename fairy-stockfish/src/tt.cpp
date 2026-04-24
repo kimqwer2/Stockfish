@@ -42,7 +42,8 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
   // Overwrite less valuable entries (cheapest checks first)
   if (b == BOUND_EXACT
       || (uint16_t)k != key16
-      || d - DEPTH_OFFSET > depth8 - 4)
+      || d - DEPTH_OFFSET + 2 * pv > depth8 - 4
+      || relative_age())
   {
       assert(d > DEPTH_OFFSET);
       assert(d < 256 + DEPTH_OFFSET);
@@ -53,6 +54,10 @@ void TTEntry::save(Key k, Value v, bool pv, Bound b, Depth d, Move m, Value ev) 
       value16   = (int16_t)v;
       eval16    = (int16_t)ev;
   }
+}
+
+uint8_t TTEntry::relative_age() const {
+  return (uint8_t)((TranspositionTable::GENERATION_CYCLE + TT.generation8 - genBound8) & TranspositionTable::GENERATION_MASK);
 }
 
 

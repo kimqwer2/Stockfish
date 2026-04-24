@@ -66,11 +66,6 @@ namespace {
   constexpr uint64_t TtHitAverageWindow     = 4096;
   constexpr uint64_t TtHitAverageResolution = 1024;
 
-  // Futility margin
-  Value futility_margin(Depth d, bool improving) {
-    return Value(214 * (d - improving));
-  }
-
   // Reductions lookup table, initialized at startup
   int Reductions[MAX_MOVES]; // [depth or moveNumber]
 
@@ -155,7 +150,7 @@ namespace {
 void Search::init() {
 
   for (int i = 1; i < MAX_MOVES; ++i)
-      Reductions[i] = int(21.9 * std::log(i));
+      Reductions[i] = int(2763 / 128.0 * std::log(i));
 }
 
 
@@ -689,7 +684,7 @@ namespace {
     Move ttMove, move, excludedMove, bestMove;
     Depth extension, newDepth;
     Value bestValue, value, ttValue, eval, maxValue, probCutBeta;
-    bool givesCheck, improving, didLMR, priorCapture;
+    bool givesCheck, improving, opponentWorsening, didLMR, priorCapture;
     bool captureOrPromotion, doFullDepthSearch, moveCountPruning,
          ttCapture, singularQuietLMR;
     Piece movedPiece;
@@ -920,6 +915,9 @@ namespace {
     improving =  (ss-2)->staticEval == VALUE_NONE
                ? ss->staticEval > (ss-4)->staticEval || (ss-4)->staticEval == VALUE_NONE
                : ss->staticEval > (ss-2)->staticEval;
+    opponentWorsening = (ss-1)->staticEval == VALUE_NONE
+                      ? false
+                      : ss->staticEval > -(ss-1)->staticEval;
 
     // Skip early pruning in case of mandatory capture
     if (pos.must_capture() && pos.has_capture())
@@ -927,18 +925,26 @@ namespace {
 
     // Step 7. Futility pruning: child node (~50 Elo)
     if (   !PvNode
-        &&  depth < 9 - 3 * pos.blast_on_capture()
-        &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
+        &&  depth < 11 - 3 * pos.blast_on_capture()
+        &&  eval >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
-        return eval;
+    {
+        Value futilityMult   = Value(74 - 18 * !ss->ttHit);
+        Value futilityMargin = futilityMult * depth
+                             - (2210 * improving + 330 * opponentWorsening) * futilityMult / 1024;
+        futilityMargin *= (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted());
+        if (eval - futilityMargin >= beta)
+            return (2 * beta + eval) / 3;
+    }
 
     // Step 8. Null move search with verification search (~40 Elo)
     if (   !PvNode
+        &&  cutNode
         && (ss-1)->currentMove != MOVE_NULL
         && (ss-1)->statScore < 23767
-        &&  eval >= beta
+        &&  ss->staticEval >= beta - 16 * depth - 53 * improving + 378
         &&  eval >= ss->staticEval
-        &&  ss->staticEval >= beta - 20 * depth - 22 * improving + 168 * ss->ttPv + 159 + 200 * (!pos.double_step_region(pos.side_to_move()) && (pos.piece_types() & PAWN))
+        &&  ss->staticEval >= beta - 14 * depth - 24 * improving + 130 * ss->ttPv + 146 + 200 * (!pos.double_step_region(pos.side_to_move()) && (pos.piece_types() & PAWN))
         && !excludedMove
         &&  pos.non_pawn_material(us)
         &&  pos.count<ALL_PIECES>(~us) != pos.count<PAWN>(~us)
@@ -948,7 +954,9 @@ namespace {
         assert(eval - beta >= 0);
 
         // Null move dynamic reduction based on depth and value
-        Depth R = (1090 - 300 * pos.must_capture() - 250 * !pos.checking_permitted() + 81 * depth) / 256 + std::min(int(eval - beta) / 205, pos.must_capture() || pos.blast_on_capture() ? 0 : 3);
+        Depth R = 7 + depth / 3 - pos.must_capture() - !pos.checking_permitted()
+                + std::min(int(eval - beta) / 220, pos.must_capture() || pos.blast_on_capture() ? 0 : 2);
+        R = std::clamp(R, 2, depth);
 
         ss->currentMove = MOVE_NULL;
         ss->continuationHistory = &thisThread->continuationHistory[0][0][NO_PIECE][0];
