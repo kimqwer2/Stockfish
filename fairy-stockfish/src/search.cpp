@@ -524,13 +524,14 @@ void Thread::search() {
           && !Threads.stop
           && !mainThread->stopOnPonderhit)
       {
-          double fallingEval = (318 + 6 * (mainThread->bestPreviousScore - bestValue)
-                                    + 6 * (mainThread->iterValue[iterIdx] - bestValue)) / 825.0;
-          fallingEval = std::clamp(fallingEval, 0.5, 1.5);
+          double fallingEval = (12.44 + 2.318 * (int(mainThread->bestPreviousScore) - int(bestValue))
+                                    + 0.95 * (int(mainThread->iterValue[iterIdx]) - int(bestValue))) / 100.0;
+          fallingEval = std::clamp(fallingEval, 0.581, 1.655);
 
           // If the bestMove is stable over several iterations, reduce time accordingly
-          timeReduction = lastBestMoveDepth + 9 < completedDepth ? 1.92 : 0.95;
-          double reduction = (1.47 + mainThread->previousTimeReduction) / (2.32 * timeReduction);
+          double k = 0.476, center = lastBestMoveDepth + 11.565;
+          timeReduction = 0.64 + 0.93 / (0.953 + std::exp(-k * (completedDepth - center)));
+          double reduction = (1.5 + mainThread->previousTimeReduction) / (2.255 * timeReduction);
 
           // Use part of the gained time from a previous stable move for the current move
           for (Thread* th : Threads)
@@ -538,14 +539,18 @@ void Thread::search() {
               totBestMoveChanges += th->bestMoveChanges;
               th->bestMoveChanges = 0;
           }
-          double bestMoveInstability = 1.073 + std::max(1.0, 2.25 - 9.9 / rootDepth)
-                                              * totBestMoveChanges / Threads.size();
-          double totalTime = Time.optimum() * fallingEval * reduction * bestMoveInstability;
+          double bestMoveInstability = 1.088 + 2.315 * totBestMoveChanges / Threads.size();
+
+          // Spend extra time in complex, unstable positions and score drops.
+          double complexity = 1.0 + std::min(0.28, 0.04 * searchAgainCounter)
+                                  + std::clamp((int(mainThread->bestPreviousScore) - int(bestValue)) / 700.0, 0.0, 0.25);
+
+          double totalTime = Time.optimum() * fallingEval * reduction * bestMoveInstability * complexity;
 
           // Cap used time in case of a single legal move for a better viewer experience in tournaments
           // yielding correct scores and sufficiently fast moves.
           if (rootMoves.size() == 1)
-              totalTime = std::min(500.0, totalTime);
+              totalTime = std::min(504.4, totalTime);
 
           // Update partner in bughouse variants
           if (completedDepth >= 8 && rootPos.two_boards() && CurrentProtocol == XBOARD)
@@ -1842,7 +1847,6 @@ moves_loop: // When in check, search starts from here
         captureHistory[moved_piece][to_sq(bestMove)][captured] << bonus1;
         if (pos.walling())
             thisThread->gateHistory[us][gating_square(bestMove)] << bonus1;
-        update_continuation_histories(ss, moved_piece, to_sq(bestMove), bonus1 / 2);
     }
 
     // Extra penalty for a quiet early move that was not a TT move or
@@ -1860,7 +1864,6 @@ moves_loop: // When in check, search starts from here
             captureHistory[moved_piece][to_sq(capturesSearched[i])][captured] << -bonus1;
         if (pos.walling())
             thisThread->gateHistory[us][gating_square(capturesSearched[i])] << -bonus1;
-        update_continuation_histories(ss, moved_piece, to_sq(capturesSearched[i]), -bonus1 / 2);
     }
   }
 
