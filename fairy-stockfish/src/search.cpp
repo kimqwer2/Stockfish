@@ -17,7 +17,6 @@
 */
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>   // For std::memset
@@ -75,30 +74,9 @@ namespace {
   // Reductions lookup table, initialized at startup
   int Reductions[MAX_MOVES]; // [depth or moveNumber]
 
-  constexpr int CorrectionHistorySize = 16384;
-  constexpr int CorrectionHistoryMask = CorrectionHistorySize - 1;
-  std::array<int16_t, CorrectionHistorySize> CorrectionHistory{};
-
   Depth reduction(bool i, Depth d, int mn) {
     int r = Reductions[d] * Reductions[mn];
     return (r + 534) / 1024 + (!i && r > 904);
-  }
-
-  Value corrected_static_eval(const Key key, const Value eval) {
-    const int corr = CorrectionHistory[key & CorrectionHistoryMask];
-    return std::clamp(eval + Value(corr / 16), VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1);
-  }
-
-  void update_correction_history(const Key key, const Value staticEval, const Value bestValue) {
-    if (staticEval == VALUE_NONE || abs(bestValue) >= VALUE_TB_WIN_IN_MAX_PLY)
-        return;
-
-    const int entry = key & CorrectionHistoryMask;
-    const int bonus = std::clamp(int(bestValue - staticEval), -256, 256);
-    const int old   = CorrectionHistory[entry];
-    const int next  = old + bonus - old * abs(bonus) / 256;
-
-    CorrectionHistory[entry] = int16_t(std::clamp(next, -1024, 1024));
   }
 
   int futility_move_count(bool improving, Depth depth, const Position& pos) {
@@ -197,7 +175,6 @@ void Search::clear() {
   Threads.main()->wait_for_search_finished();
 
   Time.availableNodes = 0;
-  CorrectionHistory.fill(0);
   TT.clear();
   Threads.clear();
   Tablebases::init(Options["SyzygyPath"]); // Free mapped files
@@ -938,8 +915,6 @@ namespace {
         tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, eval);
     }
 
-    eval = corrected_static_eval(posKey, eval);
-
     // Use static evaluation difference to improve quiet move ordering
     if (is_ok((ss-1)->currentMove) && !(ss-1)->inCheck && !priorCapture)
     {
@@ -1134,7 +1109,6 @@ moves_loop: // When in check, search starts from here
     value = bestValue;
     singularQuietLMR = moveCountPruning = false;
     bool doubleExtension = false;
-    bool singularExtensionNode = false;
 
     // Indicate PvNodes that will probably fail low if the node was searched
     // at a depth equal or greater than the current depth, and the result of this search was a fail low.
@@ -1217,6 +1191,15 @@ moves_loop: // When in check, search starts from here
                   && (*contHist[1])[history_slot(movedPiece)][to_sq(move)] < CounterMovePruneThreshold)
                   continue;
 
+              // History-based pruning for very poor quiet moves (STC-oriented, zero-overhead).
+              const int quietHistory =  thisThread->mainHistory[us][from_to(move)]
+                                     + thisThread->gateHistory[us][gating_square(move)] * 2
+                                     + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)];
+              const int histPruneThreshold = -4096 - 128 * depth * depth;
+              if (quietHistory < histPruneThreshold)
+                  continue;
+
               // Futility pruning: parent node (~5 Elo)
               if (   lmrDepth < 7
                   && !ss->inCheck
@@ -1261,7 +1244,6 @@ moves_loop: // When in check, search starts from here
           if (value < singularBeta)
           {
               extension = 1;
-              singularExtensionNode = true;
               singularQuietLMR = !ttCapture;
 
               // Avoid search explosion by limiting the number of double extensions to at most 3
@@ -1294,9 +1276,7 @@ moves_loop: // When in check, search starts from here
                   return beta;
           }
       }
-      if (singularExtensionNode && givesCheck && !captureOrPromotion && !ss->inCheck)
-          extension = std::max(extension, Depth(2));
-      else if (   givesCheck
+      if (   givesCheck
                && depth > 6
                && abs(ss->staticEval) > Value(100))
           extension = 1;
@@ -1549,8 +1529,6 @@ moves_loop: // When in check, search starts from here
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
                   depth, bestMove, ss->staticEval);
-
-    update_correction_history(posKey, ss->staticEval, bestValue);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 
