@@ -17,7 +17,6 @@
 */
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>   // For std::memset
@@ -68,37 +67,17 @@ namespace {
   constexpr uint64_t TtHitAverageResolution = 1024;
 
   // Futility margin
-  Value futility_margin(Depth d, bool improving) {
-    return Value(214 * (d - improving));
+  Value futility_margin(Depth d, bool improving, bool worsening) {
+    const int scale = improving ? 182 : worsening ? 242 : 214;
+    return Value(scale * d);
   }
 
   // Reductions lookup table, initialized at startup
   int Reductions[MAX_MOVES]; // [depth or moveNumber]
 
-  constexpr int CorrectionHistorySize = 32768;
-  constexpr int CorrectionHistoryMask = CorrectionHistorySize - 1;
-  std::array<int16_t, CorrectionHistorySize> CorrectionHistory{};
-
   Depth reduction(bool i, Depth d, int mn) {
     int r = Reductions[d] * Reductions[mn];
     return (r + 534) / 1024 + (!i && r > 904);
-  }
-
-  Value corrected_static_eval(const Key key, const Value eval) {
-    const int corr = CorrectionHistory[key & CorrectionHistoryMask];
-    return std::clamp(eval + Value(corr / 8), VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1);
-  }
-
-  void update_correction_history(const Key key, const Value staticEval, const Value bestValue) {
-    if (staticEval == VALUE_NONE || abs(bestValue) >= VALUE_TB_WIN_IN_MAX_PLY)
-        return;
-
-    const int entry = key & CorrectionHistoryMask;
-    const int bonus = std::clamp(int(bestValue - staticEval), -384, 384) / 2;
-    const int old   = CorrectionHistory[entry];
-    const int next  = old + bonus - old * abs(bonus) / 1024;
-
-    CorrectionHistory[entry] = int16_t(std::clamp(next, -4096, 4096));
   }
 
   int futility_move_count(bool improving, Depth depth, const Position& pos) {
@@ -197,7 +176,6 @@ void Search::clear() {
   Threads.main()->wait_for_search_finished();
 
   Time.availableNodes = 0;
-  CorrectionHistory.fill(0);
   TT.clear();
   Threads.clear();
   Tablebases::init(Options["SyzygyPath"]); // Free mapped files
@@ -938,8 +916,6 @@ namespace {
         tte->save(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_NONE, MOVE_NONE, eval);
     }
 
-    eval = corrected_static_eval(posKey, eval);
-
     // Use static evaluation difference to improve quiet move ordering
     if (is_ok((ss-1)->currentMove) && !(ss-1)->inCheck && !priorCapture)
     {
@@ -966,7 +942,7 @@ namespace {
     if (   !PvNode
         &&  depth < 9 - 3 * pos.blast_on_capture()
         && (improving || opponentWorsening || (ss-1)->inCheck)
-        &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
+        &&  eval - futility_margin(depth, improving, opponentWorsening) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
         return eval;
 
@@ -1093,21 +1069,6 @@ namespace {
 
     // Step 10. If the position is not in TT, decrease depth by 2
     if (   PvNode
-        && !ttMove
-        && depth >= 8
-        && !excludedMove
-        && !ss->inCheck
-        && ss->staticEval != VALUE_NONE
-        && ss->staticEval >= alpha - Value(220 + 10 * depth))
-    {
-        const Depth iidDepth = std::max(depth - 3, Depth(1));
-        (void)search<NonPV>(pos, ss, alpha, beta, iidDepth, false);
-
-        tte = TT.probe(posKey, ss->ttHit);
-        ttMove = ss->ttHit ? tte->move() : MOVE_NONE;
-    }
-
-    if (   PvNode
         && depth >= 6
         && !ttMove)
         depth -= 2;
@@ -1149,7 +1110,6 @@ moves_loop: // When in check, search starts from here
     value = bestValue;
     singularQuietLMR = moveCountPruning = false;
     bool doubleExtension = false;
-    bool singularExtensionNode = false;
 
     // Indicate PvNodes that will probably fail low if the node was searched
     // at a depth equal or greater than the current depth, and the result of this search was a fail low.
@@ -1276,13 +1236,11 @@ moves_loop: // When in check, search starts from here
           if (value < singularBeta)
           {
               extension = 1;
-              singularExtensionNode = true;
               singularQuietLMR = !ttCapture;
 
-              // Strictly gated double singular extension for PV high-depth tactical lines.
-              if (   PvNode
-                  && depth >= 8
-                  && (givesCheck || value < singularBeta - 93)
+              // Avoid search explosion by limiting the number of double extensions to at most 3
+              if (   !PvNode
+                  && value < singularBeta - 93
                   && ss->doubleExtensions < 3)
               {
                   extension = 2;
@@ -1310,9 +1268,7 @@ moves_loop: // When in check, search starts from here
                   return beta;
           }
       }
-      if (singularExtensionNode && depth >= 8 && givesCheck && !captureOrPromotion && !ss->inCheck)
-          extension = std::max(extension, Depth(2));
-      else if (   givesCheck
+      if (   givesCheck
                && depth > 6
                && abs(ss->staticEval) > Value(100))
           extension = 1;
@@ -1397,7 +1353,11 @@ moves_loop: // When in check, search starts from here
 
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
-                  r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+              {
+                  int historyAdjust = ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+                  historyAdjust = std::clamp(historyAdjust, -3, 3);
+                  r -= historyAdjust;
+              }
           }
 
           // In general we want to cap the LMR depth search at newDepth. But if
@@ -1565,8 +1525,6 @@ moves_loop: // When in check, search starts from here
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
                   depth, bestMove, ss->staticEval);
-
-    update_correction_history(posKey, ss->staticEval, bestValue);
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 
