@@ -79,25 +79,6 @@ namespace {
     return (r + 534) / 1024 + (!i && r > 904);
   }
 
-  int tactical_tension(const Position& pos) {
-    return int(pos.checkers())
-         + int(pos.must_capture())
-         + int(pos.has_capture())
-         + int(pos.check_counting())
-         + int(pos.extinction_single_piece())
-         + int(!pos.checking_permitted());
-  }
-
-  int lmr_bf_scale(int bfNode) {
-    constexpr int BF_REF = 40;
-
-    if (!bfNode)
-        return 1024;
-
-    // High branching factor => smaller reductions.
-    return std::clamp(BF_REF * 1024 / bfNode, 640, 1280);
-  }
-
   int futility_move_count(bool improving, Depth depth, const Position& pos) {
     return (3 + depth * depth * (1 + pos.walling()) + 2 * pos.blast_on_capture()) / (2 - improving + pos.blast_on_capture());
   }
@@ -183,7 +164,16 @@ namespace {
 void Search::init() {
 
   for (int i = 1; i < MAX_MOVES; ++i)
-      Reductions[i] = int(21.9 * std::log(i));
+  {
+      // LMR base table tuned for higher branching-factor variants:
+      // keep reductions flatter for late move indexes to avoid over-reduction in STC.
+      Reductions[i] = int(20.8 * std::log(i));
+
+      if (i > 12)
+          Reductions[i] -= 1;
+      if (i > 24)
+          Reductions[i] -= 1;
+  }
 }
 
 
@@ -1094,9 +1084,6 @@ namespace {
 moves_loop: // When in check, search starts from here
 
     ttCapture = ttMove && pos.capture_or_promotion(ttMove);
-    const int nodeTension = tactical_tension(pos);
-    // Latent feature for LMR damping. Keep off at shallow depth to limit overhead.
-    const int bfNode = !rootNode && depth >= 8 ? int(MoveList<LEGAL>(pos).size()) : 0;
 
     // Step 11. A small Probcut idea, when we are in check
     probCutBeta = beta + 409;
@@ -1202,9 +1189,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // SEE based pruning
-              const bool recapture = to_sq(move) == prevSq;
-              const Value seeTier = Value(70 * nodeTension + 90 * recapture + 55 * givesCheck);
-              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth - seeTier)) // (~25 Elo)
+              if (!pos.see_ge(move, Value(-218 - 120 * pos.captures_to_hand()) * depth)) // (~25 Elo)
                   continue;
           }
           else
@@ -1227,10 +1212,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK)
-                  && !pos.see_ge(move,
-                                 Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth
-                                       - 28 * nodeTension)))
+              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1333,7 +1315,6 @@ moves_loop: // When in check, search starts from here
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
           Depth r = reduction(improving, depth, moveCount);
-          r = Depth((int(r) * lmr_bf_scale(bfNode) + 512) / 1024);
 
           if (PvNode)
               r--;
@@ -1360,9 +1341,8 @@ moves_loop: // When in check, search starts from here
           // Decrease reduction if ttMove has been singularly extended (~1 Elo)
           if (singularQuietLMR)
               r--;
-
-          // High tactical tension: be more conservative with reductions.
-          if (nodeTension >= 3)
+          // Very cheap Janggi-wide-curve damping: late moves get one ply less reduction.
+          if (moveCount > 15)
               r--;
 
           // Increase reduction for cut nodes (~3 Elo)
@@ -1675,7 +1655,6 @@ moves_loop: // When in check, search starts from here
     const PieceToHistory* contHist[] = { (ss-1)->continuationHistory, (ss-2)->continuationHistory,
                                           nullptr                   , (ss-4)->continuationHistory,
                                           nullptr                   , (ss-6)->continuationHistory };
-    const int qsTension = tactical_tension(pos);
 
     // Initialize a MovePicker object for the current position, and prepare
     // to search the moves. Because the depth is <= 0 here, only captures,
@@ -1707,8 +1686,7 @@ moves_loop: // When in check, search starts from here
           &&  type_of(move) != PROMOTION)
       {
 
-          const int qsMoveCountLimit = 2 + (qsTension >= 3);
-          if (moveCount > qsMoveCountLimit)
+          if (moveCount > 2)
               continue;
 
           futilityValue = futilityBase + PieceValue[EG][pos.piece_on(to_sq(move))];
@@ -1728,7 +1706,7 @@ moves_loop: // When in check, search starts from here
 
       // Do not search moves with negative SEE values
       if (    bestValue > VALUE_TB_LOSS_IN_MAX_PLY
-          && !pos.see_ge(move, Value(-40 * qsTension)))
+          && !pos.see_ge(move))
           continue;
 
       // Speculative prefetch as early as possible
