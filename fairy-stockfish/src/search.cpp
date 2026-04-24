@@ -88,15 +88,6 @@ namespace {
     return d > 14 ? 73 : 6 * d * d + 229 * d - 215;
   }
 
-  bool is_shuffling(Move move, Stack* const ss, const Position& pos) {
-    if (pos.capture_or_promotion(move) || pos.rule50_count() < 11)
-        return false;
-    if (pos.state()->pliesFromNull <= 6 || ss->ply < 18)
-        return false;
-    return from_sq(move) == to_sq((ss - 2)->currentMove)
-        && from_sq((ss - 2)->currentMove) == to_sq((ss - 4)->currentMove);
-  }
-
   // Add a small random component to draw evaluations to avoid 3-fold blindness
   Value value_draw(Thread* thisThread) {
     return VALUE_DRAW + Value(2 * (thisThread->nodes & 1) - 1);
@@ -698,7 +689,7 @@ namespace {
     Move ttMove, move, excludedMove, bestMove;
     Depth extension, newDepth;
     Value bestValue, value, ttValue, eval, maxValue, probCutBeta;
-    bool givesCheck, improving, opponentWorsening, didLMR, priorCapture;
+    bool givesCheck, improving, didLMR, priorCapture;
     bool captureOrPromotion, doFullDepthSearch, moveCountPruning,
          ttCapture, singularQuietLMR;
     Piece movedPiece;
@@ -929,9 +920,6 @@ namespace {
     improving =  (ss-2)->staticEval == VALUE_NONE
                ? ss->staticEval > (ss-4)->staticEval || (ss-4)->staticEval == VALUE_NONE
                : ss->staticEval > (ss-2)->staticEval;
-    opponentWorsening = (ss-1)->staticEval == VALUE_NONE
-                      ? false
-                      : ss->staticEval > -(ss-1)->staticEval;
 
     // Skip early pruning in case of mandatory capture
     if (pos.must_capture() && pos.has_capture())
@@ -940,20 +928,15 @@ namespace {
     // Step 7. Futility pruning: child node (~50 Elo)
     if (   !PvNode
         &&  depth < 9 - 3 * pos.blast_on_capture()
-        && (   improving
-            || (depth < 12 && opponentWorsening)
-            || (depth < 10 && (ss-1)->inCheck))
         &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
         return eval;
 
     // Step 8. Null move search with verification search (~40 Elo)
     if (   !PvNode
-        &&  cutNode
         && (ss-1)->currentMove != MOVE_NULL
         && (ss-1)->statScore < 23767
         &&  eval >= beta
-        && (depth < 12 || eval >= beta + 20 * (depth - 11))
         &&  eval >= ss->staticEval
         &&  ss->staticEval >= beta - 20 * depth - 22 * improving + 168 * ss->ttPv + 159 + 200 * (!pos.double_step_region(pos.side_to_move()) && (pos.piece_types() & PAWN))
         && !excludedMove
@@ -1000,8 +983,6 @@ namespace {
                 return nullValue;
         }
     }
-
-    improving |= ss->staticEval >= beta;
 
     probCutBeta = beta + (209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
 
@@ -1225,8 +1206,7 @@ moves_loop: // When in check, search starts from here
        /* &&  ttValue != VALUE_NONE Already implicit in the next condition */
           &&  abs(ttValue) < VALUE_KNOWN_WIN
           && (tte->bound() & BOUND_LOWER)
-          &&  tte->depth() >= depth - 3
-          && !(depth < 12 && is_shuffling(move, ss, pos)))
+          &&  tte->depth() >= depth - 3)
       {
           Value singularBeta = ttValue - 2 * depth;
           Depth singularDepth = (depth - 1) / 2;
@@ -1356,22 +1336,12 @@ moves_loop: // When in check, search starts from here
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
-
-              // Prevent history from dominating deep-node reductions
-              ss->statScore = std::clamp(ss->statScore, -28000, 28000);
           }
-
-          // Soften late-move reductions at higher depths for LTC stability
-          if (depth > 15)
-              r -= 1 + !captureOrPromotion;
 
           // In general we want to cap the LMR depth search at newDepth. But if
           // reductions are really negative and movecount is low, we allow this move
           // to be searched deeper than the first move, unless ttMove was extended by 2.
           Depth d = std::clamp(newDepth - r, 1, newDepth + (r < -1 && moveCount <= 5 && !doubleExtension));
-
-          if (depth > 15)
-              d = std::max(d, newDepth - 1);
 
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
@@ -1872,6 +1842,7 @@ moves_loop: // When in check, search starts from here
         captureHistory[moved_piece][to_sq(bestMove)][captured] << bonus1;
         if (pos.walling())
             thisThread->gateHistory[us][gating_square(bestMove)] << bonus1;
+        update_continuation_histories(ss, moved_piece, to_sq(bestMove), bonus1 / 2);
     }
 
     // Extra penalty for a quiet early move that was not a TT move or
@@ -1889,6 +1860,7 @@ moves_loop: // When in check, search starts from here
             captureHistory[moved_piece][to_sq(capturesSearched[i])][captured] << -bonus1;
         if (pos.walling())
             thisThread->gateHistory[us][gating_square(capturesSearched[i])] << -bonus1;
+        update_continuation_histories(ss, moved_piece, to_sq(capturesSearched[i]), -bonus1 / 2);
     }
   }
 

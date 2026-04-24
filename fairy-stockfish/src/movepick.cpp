@@ -16,6 +16,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cassert>
 
 #include "movepick.h"
@@ -184,6 +185,26 @@ top:
                               // Move losing capture to endBadCaptures to be tried later
                               true : (*endBadCaptures++ = *cur, false); }))
           return *(cur - 1);
+
+      // Score and sort refutations (killers + countermove) before trying them.
+      for (auto& r : refutations)
+      {
+          if (   r.move != MOVE_NONE
+              && !pos.capture(r.move)
+              &&  pos.pseudo_legal(r.move))
+          {
+              Piece pc = pos.moved_piece(r.move);
+              Square to = to_sq(r.move);
+              r.value =      (*mainHistory)[pos.side_to_move()][from_to(r.move)]
+                         +     (*gateHistory)[pos.side_to_move()][gating_square(r.move)]
+                         + 2 * (*continuationHistory[0])[history_slot(pc)][to]
+                         +     (*continuationHistory[1])[history_slot(pc)][to];
+          }
+          else
+              r.value = -VALUE_INFINITE;
+      }
+      std::sort(std::begin(refutations), std::end(refutations),
+                [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
 
       // Prepare the pointers to loop over the refutations array
       cur = std::begin(refutations);
