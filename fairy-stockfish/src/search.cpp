@@ -94,7 +94,7 @@ namespace {
         return;
 
     const int entry = key & CorrectionHistoryMask;
-    const int bonus = std::clamp(int(bestValue - staticEval), -384, 384);
+    const int bonus = std::clamp(int(bestValue - staticEval), -384, 384) / 2;
     const int old   = CorrectionHistory[entry];
     const int next  = old + bonus - old * abs(bonus) / 1024;
 
@@ -1092,13 +1092,16 @@ namespace {
     }
 
     // Step 10. If the position is not in TT, decrease depth by 2
-    if (   !ttMove
+    if (   PvNode
+        && !ttMove
         && depth >= 8
         && !excludedMove
-        && !ss->inCheck)
+        && !ss->inCheck
+        && ss->staticEval != VALUE_NONE
+        && ss->staticEval >= alpha - Value(220 + 10 * depth))
     {
         const Depth iidDepth = std::max(depth - 3, Depth(1));
-        (void)search<NonPV>(pos, ss, alpha, beta, iidDepth, cutNode);
+        (void)search<NonPV>(pos, ss, alpha, beta, iidDepth, false);
 
         tte = TT.probe(posKey, ss->ttHit);
         ttMove = ss->ttHit ? tte->move() : MOVE_NONE;
@@ -1276,9 +1279,10 @@ moves_loop: // When in check, search starts from here
               singularExtensionNode = true;
               singularQuietLMR = !ttCapture;
 
-              // Avoid search explosion by limiting the number of double extensions to at most 3
-              if (   !PvNode
-                  && value < singularBeta - 93
+              // Strictly gated double singular extension for PV high-depth tactical lines.
+              if (   PvNode
+                  && depth >= 8
+                  && (givesCheck || value < singularBeta - 93)
                   && ss->doubleExtensions < 3)
               {
                   extension = 2;
