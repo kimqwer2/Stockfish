@@ -1350,9 +1350,35 @@ moves_loop: // When in check, search starts from here
                              + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
                              - 4923;
 
+              if (move == countermove)
+                  ss->statScore += 4096;
+              if (ss->ply < MAX_LPH)
+                  ss->statScore += thisThread->lowPlyHistory[ss->ply][from_to(move)] / 2;
+
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+
+              if (depth >= 11 && ss->statScore > 6000)
+                  r--;
+              if (depth >= 14 && moveCount <= 8)
+                  r--;
+              if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
+                  r++;
+          }
+          doFullDepthSearch = value >= alpha && d < newDepth;
+
+              // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
+              if (!ss->inCheck)
+                  r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+
+              // Be safer at higher depths for good quiet moves, and stricter only for very late bad ones.
+              if (depth >= 11 && ss->statScore > 5000)
+                  r--;
+              if (depth >= 14 && moveCount <= 6)
+                  r--;
+              if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
+                  r++;
           }
 
           // In general we want to cap the LMR depth search at newDepth. But if
@@ -1363,7 +1389,7 @@ moves_loop: // When in check, search starts from here
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
           // If the son is reduced and fails high it will be re-searched at full depth
-          doFullDepthSearch = value > alpha && d < newDepth;
+          doFullDepthSearch = value >= alpha - 8 && d < newDepth;
           didLMR = true;
       }
       else
