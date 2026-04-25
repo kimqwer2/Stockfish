@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -46,6 +47,7 @@ class Thread {
   size_t idx;
   bool exit = false, searching = true; // Set before starting std::thread
   NativeThread stdThread;
+  std::function<void()> jobFunc;
 
 public:
   explicit Thread(size_t);
@@ -54,6 +56,7 @@ public:
   void clear();
   void idle_loop();
   void start_searching();
+  void run_custom_job(std::function<void()> f);
   void wait_for_search_finished();
   size_t id() const { return idx; }
 

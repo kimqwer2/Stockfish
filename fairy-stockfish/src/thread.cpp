@@ -86,6 +86,18 @@ void Thread::start_searching() {
 }
 
 
+void Thread::run_custom_job(std::function<void()> f) {
+
+  {
+      std::lock_guard<std::mutex> lk(mutex);
+      jobFunc = std::move(f);
+      searching = true;
+  }
+
+  cv.notify_one();
+}
+
+
 /// Thread::wait_for_search_finished() blocks on the condition variable
 /// until the thread has finished searching.
 
@@ -125,9 +137,13 @@ void Thread::idle_loop() {
       if (exit)
           return;
 
+      auto job = std::move(jobFunc);
       lk.unlock();
 
-      search();
+      if (job)
+          job();
+      else
+          search();
   }
 }
 
@@ -167,7 +183,10 @@ void ThreadPool::set(size_t requested) {
 void ThreadPool::clear() {
 
   for (Thread* th : *this)
-      th->clear();
+      th->run_custom_job([th] { th->clear(); });
+
+  for (Thread* th : *this)
+      th->wait_for_search_finished();
 
   main()->callsCnt = 0;
   main()->bestPreviousScore = VALUE_INFINITE;

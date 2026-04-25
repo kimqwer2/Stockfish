@@ -18,7 +18,6 @@
 
 #include <cstring>   // For std::memset
 #include <iostream>
-#include <thread>
 
 #include "bitboard.h"
 #include "misc.h"
@@ -90,28 +89,21 @@ void TranspositionTable::resize(size_t mbSize) {
 
 void TranspositionTable::clear() {
 
-  std::vector<std::thread> threads;
+  const size_t threadCount = Threads.size();
+  if (!threadCount)
+      return;
 
-  for (size_t idx = 0; idx < Options["Threads"]; ++idx)
-  {
-      threads.emplace_back([this, idx]() {
-
-          // Thread binding gives faster search on systems with a first-touch policy
-          if (Options["Threads"] > 8)
-              WinProcGroup::bindThisThread(idx);
-
-          // Each thread will zero its part of the hash table
-          const size_t stride = size_t(clusterCount / Options["Threads"]),
-                       start  = size_t(stride * idx),
-                       len    = idx != Options["Threads"] - 1 ?
-                                stride : clusterCount - start;
+  for (size_t idx = 0; idx < threadCount; ++idx)
+      Threads[idx]->run_custom_job([this, idx, threadCount] {
+          const size_t stride = clusterCount / threadCount;
+          const size_t start  = stride * idx;
+          const size_t len    = idx + 1 != threadCount ? stride : clusterCount - start;
 
           std::memset(&table[start], 0, len * sizeof(Cluster));
       });
-  }
 
-  for (std::thread& th : threads)
-      th.join();
+  for (size_t idx = 0; idx < threadCount; ++idx)
+      Threads[idx]->wait_for_search_finished();
 }
 
 
@@ -130,8 +122,6 @@ TTEntry* TranspositionTable::probe(const Key key, bool& found) const {
   for (int i = 0; i < ClusterSize; ++i)
       if (tte[i].key16 == key16 || !tte[i].depth8)
       {
-          tte[i].genBound8 = uint8_t(generation8 | (tte[i].genBound8 & (GENERATION_DELTA - 1))); // Refresh
-
           return found = (bool)tte[i].depth8, &tte[i];
       }
 

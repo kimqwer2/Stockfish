@@ -20,6 +20,10 @@
 #define TT_H_INCLUDED
 
 #include "misc.h"
+
+#if defined(_MSC_VER)
+  #include <xmmintrin.h>
+#endif
 #include "types.h"
 
 namespace Stockfish {
@@ -85,6 +89,14 @@ public:
  ~TranspositionTable() { aligned_large_pages_free(table); }
   void new_search() { generation8 += GENERATION_DELTA; } // Lower bits are used for other things
   TTEntry* probe(const Key key, bool& found) const;
+  void prefetch(const Key key) const {
+      const auto* cl = &table[mul_hi64(key, clusterCount)];
+#if defined(__GNUC__) || defined(__clang__)
+      __builtin_prefetch(cl, 0, 3);
+#elif defined(_MSC_VER)
+      _mm_prefetch(reinterpret_cast<const char*>(cl), _MM_HINT_T0);
+#endif
+  }
   int hashfull() const;
   void resize(size_t mbSize);
   void clear();

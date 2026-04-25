@@ -67,8 +67,9 @@ namespace {
   constexpr uint64_t TtHitAverageResolution = 1024;
 
   // Futility margin
-  Value futility_margin(Depth d, bool improving) {
-    return Value(214 * (d - improving));
+  Value futility_margin(Depth d, bool improving, bool worsening) {
+    const int scale = improving ? 182 : worsening ? 242 : 214;
+    return Value(scale * d);
   }
 
   // Reductions lookup table, initialized at startup
@@ -941,7 +942,7 @@ namespace {
     if (   !PvNode
         &&  depth < 9 - 3 * pos.blast_on_capture()
         && (improving || opponentWorsening || (ss-1)->inCheck)
-        &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
+        &&  eval - futility_margin(depth, improving, opponentWorsening) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
         return eval;
 
@@ -1267,7 +1268,7 @@ moves_loop: // When in check, search starts from here
                   return beta;
           }
       }
-      else if (   givesCheck
+      if (   givesCheck
                && depth > 6
                && abs(ss->staticEval) > Value(100))
           extension = 1;
@@ -1352,7 +1353,21 @@ moves_loop: // When in check, search starts from here
 
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
-                  r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+              {
+                  int historyAdjust = ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+                  historyAdjust = std::clamp(historyAdjust, -3, 3);
+                  r -= historyAdjust;
+
+                  // Continuation / countermove LMR adjustment (zero-overhead, history-only).
+                  int continuationScore =   (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                                          + (*contHist[1])[history_slot(movedPiece)][to_sq(move)];
+                  if (move == countermove)
+                      continuationScore += CounterMovePruneThreshold;
+
+                  int continuationAdjust = continuationScore / (9824 - 2384 * pos.captures_to_hand());
+                  continuationAdjust = std::clamp(continuationAdjust, -2, 2);
+                  r -= continuationAdjust;
+              }
           }
 
           // In general we want to cap the LMR depth search at newDepth. But if
