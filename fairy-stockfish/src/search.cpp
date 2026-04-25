@@ -1305,26 +1305,68 @@ moves_loop: // When in check, search starts from here
               || !ss->ttPv)
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
-          const int earlyMoveBase = rootNode ? 4 : 2;
-          const int lateMove = std::max(0, moveCount - earlyMoveBase);
-          int baseR = (depth * lateMove) / 18 + lateMove / 4;
+          Depth r = reduction(improving, depth, moveCount);
 
-          // Extra growth only for clearly late moves, with depth-aware damping.
-          baseR += lateMove * lateMove / (12 + depth);
+          if (PvNode)
+              r--;
 
-          // Node-type scaling (PV/non-PV/cut/PV-trace), without statScore-based tuning.
-          int nodeScale = 1024
-                        + (cutNode ? 96 : 0)
-                        - (PvNode ? 80 : 0)
-                        - ((ss->ttPv && !likelyFailLow) ? 64 : 0)
-                        - (singularQuietLMR ? 48 : 0)
-                        - (((ss-1)->moveCount > 13) ? 32 : 0)
-                        - ((thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024) ? 32 : 0)
-                        + ((ttCapture && !captureOrPromotion) ? 48 : 0);
+          // Decrease reduction if the ttHit running average is large (~0 Elo)
+          if (thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024)
+              r--;
 
-          Depth r = std::max(0, baseR * nodeScale / 1024);
-          ss->statScore = 0;
+          // Decrease reduction if position is or has been on the PV
+          // and node is not likely to fail low. (~3 Elo)
+          if (   ss->ttPv
+              && !likelyFailLow)
+              r -= 2;
+
+          // Increase reduction at root and non-PV nodes when the best move does not change frequently
+          if (   (rootNode || !PvNode)
+              && thisThread->bestMoveChanges <= 2)
+              r++;
+
+          // Decrease reduction if opponent's move count is high (~1 Elo)
+          if ((ss-1)->moveCount > 13)
+              r--;
+
+          // Decrease reduction if ttMove has been singularly extended (~1 Elo)
+          if (singularQuietLMR)
+              r--;
+
+          // Increase reduction for cut nodes (~3 Elo)
+          if (cutNode)
+              r += 1 + !captureOrPromotion;
+
+          if (!captureOrPromotion)
+          {
+              // Increase reduction if ttMove is a capture (~3 Elo)
+              if (ttCapture)
+                  r++;
+
+              ss->statScore =  thisThread->mainHistory[us][from_to(move)]
+                             + thisThread->gateHistory[us][gating_square(move)] * 2
+                             + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                             + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
+                             + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
+                             - 4923;
+
+              if (move == countermove)
+                  ss->statScore += 4096;
+              if (ss->ply < MAX_LPH)
                   ss->statScore += thisThread->lowPlyHistory[ss->ply][from_to(move)] / 2;
+
+              // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
+              if (!ss->inCheck)
+                  r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+
+              if (depth >= 11 && ss->statScore > 6000)
+                  r--;
+              if (depth >= 14 && moveCount <= 8)
+                  r--;
+              if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
+                  r++;
+          }
+          doFullDepthSearch = value >= alpha && d < newDepth;
 
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
