@@ -1361,9 +1361,9 @@ moves_loop: // When in check, search starts from here
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
 
               // Be safer at higher depths for good quiet moves, and stricter only for very late bad ones.
-              if (depth >= 11 && ss->statScore > 6000)
+              if (depth >= 11 && ss->statScore > 3000 + 200 * depth)
                   r--;
-              if (depth >= 14 && moveCount <= 8)
+              if (depth >= 14 && moveCount <= 4)
                   r--;
               if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
                   r++;
@@ -1377,7 +1377,7 @@ moves_loop: // When in check, search starts from here
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
           // If the son is reduced and fails high it will be re-searched at full depth
-          doFullDepthSearch = value >= alpha && d < newDepth;
+          doFullDepthSearch = value >= alpha - 8 && d < newDepth;
           didLMR = true;
       }
       else
