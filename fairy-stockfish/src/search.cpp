@@ -1305,7 +1305,8 @@ moves_loop: // When in check, search starts from here
               || !ss->ttPv)
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
-          const int lateMove = std::max(0, moveCount - (2 + 2 * rootNode));
+          const int earlyMoveBase = rootNode ? 4 : 2;
+          const int lateMove = std::max(0, moveCount - earlyMoveBase);
           int baseR = (depth * lateMove) / 18 + lateMove / 4;
 
           // Extra growth only for clearly late moves, with depth-aware damping.
@@ -1313,15 +1314,15 @@ moves_loop: // When in check, search starts from here
 
           // Node-type scaling (PV/non-PV/cut/PV-trace), without statScore-based tuning.
           int nodeScale = 1024
-                        + 96 * int(cutNode)
-                        - 80 * int(PvNode)
-                        - 64 * int(ss->ttPv && !likelyFailLow)
-                        - 48 * int(singularQuietLMR)
-                        - 32 * int((ss-1)->moveCount > 13)
-                        - 32 * int(thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024)
-                        + 48 * int(ttCapture && !captureOrPromotion);
+                        + (cutNode ? 96 : 0)
+                        - (PvNode ? 80 : 0)
+                        - ((ss->ttPv && !likelyFailLow) ? 64 : 0)
+                        - (singularQuietLMR ? 48 : 0)
+                        - (((ss-1)->moveCount > 13) ? 32 : 0)
+                        - ((thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024) ? 32 : 0)
+                        + ((ttCapture && !captureOrPromotion) ? 48 : 0);
 
-          Depth r = std::max<Depth>(0, baseR * nodeScale / 1024);
+          Depth r = std::max(0, baseR * nodeScale / 1024);
           ss->statScore = 0;
                   ss->statScore += thisThread->lowPlyHistory[ss->ply][from_to(move)] / 2;
 
