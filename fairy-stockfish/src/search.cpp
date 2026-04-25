@@ -1357,6 +1357,16 @@ moves_loop: // When in check, search starts from here
                   int historyAdjust = ss->statScore / (14721 - 4434 * pos.captures_to_hand());
                   historyAdjust = std::clamp(historyAdjust, -3, 3);
                   r -= historyAdjust;
+
+                  // Continuation / countermove LMR adjustment (zero-overhead, history-only).
+                  int continuationScore =   (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
+                                          + (*contHist[1])[history_slot(movedPiece)][to_sq(move)];
+                  if (move == countermove)
+                      continuationScore += CounterMovePruneThreshold;
+
+                  int continuationAdjust = continuationScore / (9824 - 2384 * pos.captures_to_hand());
+                  continuationAdjust = std::clamp(continuationAdjust, -2, 2);
+                  r -= continuationAdjust;
               }
           }
 
