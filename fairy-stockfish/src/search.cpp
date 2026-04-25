@@ -1337,6 +1337,16 @@ moves_loop: // When in check, search starts from here
           if (cutNode)
               r += 1 + !captureOrPromotion;
 
+          // Smooth LMR at practical depths: avoid over-reducing in the 8..14 range.
+          if (depth >= 8 && depth <= 14)
+              r--;
+
+          // Protect top ordered moves, but increase reduction for clearly late moves only.
+          if (moveCount <= 6)
+              r--;
+          else if (moveCount > 10)
+              r += 1 + (moveCount > 16);
+
           if (!captureOrPromotion)
           {
               // Increase reduction if ttMove is a capture (~3 Elo)
