@@ -1361,9 +1361,9 @@ moves_loop: // When in check, search starts from here
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
 
               // Be safer at higher depths for good quiet moves, and stricter only for very late bad ones.
-              if (depth >= 11 && ss->statScore > 3000 + 200 * depth)
+              if (depth >= 11 && ss->statScore > 5000)
                   r--;
-              if (depth >= 14 && moveCount <= 4)
+              if (depth >= 14 && moveCount <= 6)
                   r--;
               if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
                   r++;
