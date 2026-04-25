@@ -1305,65 +1305,24 @@ moves_loop: // When in check, search starts from here
               || !ss->ttPv)
           && (!PvNode || ss->ply > 1 || thisThread->id() % 4 != 3))
       {
-          Depth r = reduction(improving, depth, moveCount);
+          const int lateMove = std::max(0, moveCount - (2 + 2 * rootNode));
+          int baseR = (depth * lateMove) / 18 + lateMove / 4;
 
-          if (PvNode)
-              r--;
+          // Extra growth only for clearly late moves, with depth-aware damping.
+          baseR += lateMove * lateMove / (12 + depth);
 
-          // Decrease reduction if the ttHit running average is large (~0 Elo)
-          if (thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024)
-              r--;
+          // Node-type scaling (PV/non-PV/cut/PV-trace), without statScore-based tuning.
+          int nodeScale = 1024
+                        + 96 * int(cutNode)
+                        - 80 * int(PvNode)
+                        - 64 * int(ss->ttPv && !likelyFailLow)
+                        - 48 * int(singularQuietLMR)
+                        - 32 * int((ss-1)->moveCount > 13)
+                        - 32 * int(thisThread->ttHitAverage > 537 * TtHitAverageResolution * TtHitAverageWindow / 1024)
+                        + 48 * int(ttCapture && !captureOrPromotion);
 
-          // Decrease reduction if position is or has been on the PV
-          // and node is not likely to fail low. (~3 Elo)
-          if (   ss->ttPv
-              && !likelyFailLow)
-              r -= 2;
-
-          // Increase reduction at root and non-PV nodes when the best move does not change frequently
-          if (   (rootNode || !PvNode)
-              && thisThread->bestMoveChanges <= 2)
-              r++;
-
-          // Decrease reduction if opponent's move count is high (~1 Elo)
-          if ((ss-1)->moveCount > 13)
-              r--;
-
-          // Decrease reduction if ttMove has been singularly extended (~1 Elo)
-          if (singularQuietLMR)
-              r--;
-
-          // Increase reduction for cut nodes (~3 Elo)
-          if (cutNode)
-              r += 1 + !captureOrPromotion;
-
-          // Smooth LMR at practical depths: avoid over-reducing in the 8..14 range.
-          if (depth >= 8 && depth <= 14)
-              r--;
-
-          // Protect top ordered moves, but increase reduction for clearly late moves only.
-          if (moveCount <= 6)
-              r--;
-          else if (moveCount > 10)
-              r += 1 + (moveCount > 16);
-
-          if (!captureOrPromotion)
-          {
-              // Increase reduction if ttMove is a capture (~3 Elo)
-              if (ttCapture)
-                  r++;
-
-              ss->statScore =  thisThread->mainHistory[us][from_to(move)]
-                             + thisThread->gateHistory[us][gating_square(move)] * 2
-                             + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
-                             + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
-                             + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
-                             - 4923;
-
-              // Reward likely tactical refutations and stable continuations in ordering/reductions.
-              if (move == countermove)
-                  ss->statScore += 4096;
-              if (ss->ply < MAX_LPH)
+          Depth r = std::max<Depth>(0, baseR * nodeScale / 1024);
+          ss->statScore = 0;
                   ss->statScore += thisThread->lowPlyHistory[ss->ply][from_to(move)] / 2;
 
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
