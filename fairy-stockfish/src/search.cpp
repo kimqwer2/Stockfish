@@ -817,41 +817,10 @@ namespace {
             }
         }
 
-        // Partial workaround for the graph history interaction problem.
+        // Partial workaround for the graph history interaction problem
         // For high rule50 counts don't produce transposition table cutoffs.
         if (pos.rule50_count() < 90)
-        {
-            // Keep verification overhead low: apply only in deeper, repetition-prone quiet positions.
-            if (   !PvNode
-                && moveCount > 3
-                && tte->depth() < depth - 2
-                && depth >= 9
-                && ttMove
-                && !pos.capture_or_promotion(ttMove)
-                && abs(ttValue) < VALUE_TB_WIN_IN_MAX_PLY
-                && (pos.rule50_count() >= 14 || is_shuffling(ttMove, ss, pos))
-                && pos.pseudo_legal(ttMove)
-                && pos.legal(ttMove))
-            {
-                pos.do_move(ttMove, st);
-
-                bool ttHitNext;
-                TTEntry* tteNext = TT.probe(pos.key(), ttHitNext);
-                Value ttValueNext = ttHitNext ? value_from_tt(tteNext->value(), ss->ply + 1, pos.rule50_count())
-                                              : VALUE_NONE;
-
-                pos.undo_move(ttMove);
-
-                // Only trust current TT cutoff if TT supports the same bound after ttMove.
-                if (ttValueNext == VALUE_NONE)
-                    return ttValue;
-
-                if ((ttValue >= beta) == (-ttValueNext >= beta))
-                    return ttValue;
-            }
-            else
-                return ttValue;
-        }
+            return ttValue;
     }
 
     // Step 5. Tablebases probe
@@ -1381,9 +1350,23 @@ moves_loop: // When in check, search starts from here
                              + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
                              - 4923;
 
+              // Reward likely tactical refutations and stable continuations in ordering/reductions.
+              if (move == countermove)
+                  ss->statScore += 4096;
+              if (ss->ply < MAX_LPH)
+                  ss->statScore += thisThread->lowPlyHistory[ss->ply][from_to(move)] / 2;
+
               // Decrease/increase reduction for moves with a good/bad history (~30 Elo)
               if (!ss->inCheck)
                   r -= ss->statScore / (14721 - 4434 * pos.captures_to_hand());
+
+              // Be safer at higher depths for good quiet moves, and stricter only for very late bad ones.
+              if (depth >= 11 && ss->statScore > 6000)
+                  r--;
+              if (depth >= 14 && moveCount <= 8)
+                  r--;
+              if (depth >= 10 && moveCount > 8 + depth / 2 && ss->statScore < -3000)
+                  r++;
           }
 
           // In general we want to cap the LMR depth search at newDepth. But if
@@ -1394,7 +1377,7 @@ moves_loop: // When in check, search starts from here
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
           // If the son is reduced and fails high it will be re-searched at full depth
-          doFullDepthSearch = value > alpha && d < newDepth;
+          doFullDepthSearch = value >= alpha && d < newDepth;
           didLMR = true;
       }
       else
